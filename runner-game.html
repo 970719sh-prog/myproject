@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>Pip's Pixel Run</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+    background: #1a1f2e;
+    font-family: 'Trebuchet MS', 'Segoe UI', sans-serif;
+  }
+  .wrap {
+    width: 100vw;
+    height: 100vh;
+    background: #6c8ff0;
+    display: flex;
+    flex-direction: column;
+  }
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    background: #4d6fd6;
+    flex: 0 0 auto;
+  }
+  button {
+    font-family: inherit;
+    font-weight: 700;
+    font-size: 14px;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 14px;
+    cursor: pointer;
+    background: rgba(255,255,255,.9);
+    color: #2b3a67;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  #soundBtn {
+    padding: 8px 10px;
+    font-size: 16px;
+  }
+  .score {
+    margin-left: auto;
+    color: #fff;
+    font-weight: 800;
+    font-size: 20px;
+    letter-spacing: 1px;
+    text-shadow: 0 2px 0 rgba(0,0,0,.25);
+  }
+  .msg {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    image-rendering: pixelated;
+    background: #6c8ff0;
+  }
+  .overlay {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 10px;
+    background: rgba(20,25,45,.55);
+    color: #fff;
+    font-size: clamp(18px, 3vw, 30px);
+    font-weight: 800;
+    text-align: center;
+    padding: 20px;
+  }
+  .overlay span { font-size: clamp(12px, 1.6vw, 16px); font-weight: 500; opacity: .85; }
+  .overlay.show { display: flex; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="bar">
+    <button id="startBtn">Start</button>
+    <button id="stopBtn" disabled>Stop</button>
+    <button id="restartBtn">Restart</button>
+    <button id="soundBtn" title="소리 켜기/끄기">🔊</button>
+    <div class="score">Score <span id="scoreVal">0</span></div>
+  </div>
+  <div class="msg">
+    <canvas id="game"></canvas>
+    <div class="overlay" id="overlay">
+      <div id="overlayTitle">스페이스바 또는 클릭으로 점프!</div>
+      <span>Start 버튼을 눌러 시작하세요</span>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+
+  // Logical world resolution: fixed height, width follows the screen's
+  // actual aspect ratio so the game always fills the whole viewport
+  // without stretching the pixel art.
+  let VH = 90;
+  let VW = 160;
+  let GROUND_Y = VH - 14;
+
+  function resizeCanvas() {
+    const rect = canvas.parentElement.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.round(rect.width * dpr));
+    canvas.height = Math.max(1, Math.round(rect.height * dpr));
+    VH = 90;
+    VW = VH * (canvas.width / canvas.height);
+    GROUND_Y = VH - 14;
+  }
+
+  const startBtn = document.getElementById('startBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const restartBtn = document.getElementById('restartBtn');
+  const soundBtn = document.getElementById('soundBtn');
+  const scoreVal = document.getElementById('scoreVal');
+  const overlay = document.getElementById('overlay');
+  const overlayTitle = document.getElementById('overlayTitle');
+
+  let soundOn = true;
+  let audioCtx = null;
+  function beep(freq, dur, type) {
+    if (!soundOn) return;
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = type || 'square';
+      osc.frequency.value = freq;
+      gain.gain.value = 0.06;
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start();
+      gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + dur);
+      osc.stop(audioCtx.currentTime + dur);
+    } catch (e) { /* audio not available, ignore */ }
+  }
+
+  // ---- Original character: "Pip" the pixel explorer ----
+  function drawPip(x, y, frame, ducking) {
+    const h = ducking ? 10 : 14;
+    const topY = y + (14 - h);
+    ctx.fillStyle = '#4a2f22';
+    if (!ducking) {
+      if (frame === 0) {
+        ctx.fillRect(x + 1, topY + 11, 3, 3);
+        ctx.fillRect(x + 7, topY + 11, 3, 3);
+      } else {
+        ctx.fillRect(x + 2, topY + 11, 3, 3);
+        ctx.fillRect(x + 6, topY + 11, 3, 3);
+      }
+    } else {
+      ctx.fillRect(x + 1, topY + 7, 9, 3);
+    }
+    ctx.fillStyle = '#2e6cd6';
+    ctx.fillRect(x + 1, topY + 5, 9, ducking ? 4 : 7);
+    ctx.fillStyle = '#f2c48d';
+    ctx.fillRect(x - 1, topY + 6, 2, 3);
+    ctx.fillStyle = '#f2c48d';
+    ctx.fillRect(x + 2, topY, 7, 5);
+    ctx.fillStyle = '#e8574a';
+    ctx.fillRect(x + 1, topY - 1, 9, 2);
+    ctx.fillRect(x + 8, topY, 2, 2);
+    ctx.fillStyle = '#22293b';
+    ctx.fillRect(x + 6, topY + 2, 1, 1);
+  }
+
+  // ---- Original enemy: "Thorble" a spiky ground creature ----
+  function drawThorble(x, y) {
+    ctx.fillStyle = '#7a2e2e';
+    ctx.fillRect(x + 1, y + 3, 2, 2);
+    ctx.fillRect(x + 9, y + 3, 2, 2);
+    ctx.fillRect(x + 4, y, 2, 2);
+    ctx.fillRect(x + 4, y + 9, 2, 2);
+    ctx.fillStyle = '#c0524a';
+    ctx.fillRect(x + 2, y + 2, 8, 8);
+    ctx.fillStyle = '#2a1414';
+    ctx.fillRect(x + 4, y + 5, 1, 1);
+    ctx.fillRect(x + 7, y + 5, 1, 1);
+  }
+
+  // ---- Original collectible: crystal gem ----
+  function drawGem(x, y, wobble) {
+    const oy = Math.sin(wobble) * 1.2;
+    ctx.fillStyle = '#f6c945';
+    ctx.fillRect(x + 2, y + oy, 4, 2);
+    ctx.fillRect(x, y + 2 + oy, 8, 4);
+    ctx.fillRect(x + 2, y + 6 + oy, 4, 2);
+    ctx.fillStyle = '#fff3c4';
+    ctx.fillRect(x + 3, y + 2 + oy, 2, 2);
+  }
+
+  function drawGround() {
+    ctx.fillStyle = '#4f9d3a';
+    ctx.fillRect(0, GROUND_Y, VW, 3);
+    ctx.fillStyle = '#8a5a34';
+    ctx.fillRect(0, GROUND_Y + 3, VW, VH - GROUND_Y - 3);
+    ctx.fillStyle = '#794a2b';
+    for (let i = -8; i < VW + 8; i += 8) {
+      ctx.fillRect((i - (state.groundOffset % 8)), GROUND_Y + 6, 4, 2);
+    }
+  }
+
+  function drawBackground() {
+    ctx.fillStyle = '#6c8ff0';
+    ctx.fillRect(0, 0, VW, VH);
+    ctx.fillStyle = 'rgba(255,255,255,.5)';
+    state.clouds.forEach(c => {
+      ctx.fillRect(c.x, c.y, 10, 3);
+      ctx.fillRect(c.x + 2, c.y - 2, 6, 2);
+    });
+  }
+
+  const initialState = () => ({
+    running: false,
+    gameOver: false,
+    t: 0,
+    speed: 1.6,
+    groundOffset: 0,
+    player: { x: 18, y: GROUND_Y - 14, vy: 0, onGround: true, ducking: false },
+    obstacles: [],
+    gems: [],
+    spawnTimer: 60,
+    gemTimer: 90,
+    score: 0,
+    frame: 0,
+    frameTimer: 0,
+    clouds: [
+      { x: VW * 0.15, y: 12 }, { x: VW * 0.4, y: 20 },
+      { x: VW * 0.7, y: 8 }, { x: VW * 0.9, y: 16 }
+    ]
+  });
+
+  let state;
+
+  function reset() {
+    resizeCanvas();
+    state = initialState();
+    scoreVal.textContent = '0';
+    overlay.classList.add('show');
+    overlayTitle.textContent = '스페이스바 또는 클릭으로 점프!';
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    render();
+  }
+
+  function jump() {
+    if (!state.running || state.gameOver) return;
+    if (state.player.onGround) {
+      state.player.vy = -4.6;
+      state.player.onGround = false;
+      beep(520, 0.08, 'square');
+    }
+  }
+
+  function update() {
+    state.t++;
+    state.groundOffset += state.speed;
+    state.speed = Math.min(3.4, 1.6 + state.t / 900);
+
+    const p = state.player;
+    p.vy += 0.28;
+    p.y += p.vy;
+    const floor = GROUND_Y - (p.ducking ? 10 : 14);
+    if (p.y >= floor) {
+      p.y = floor;
+      p.vy = 0;
+      p.onGround = true;
+    }
+
+    state.spawnTimer--;
+    if (state.spawnTimer <= 0) {
+      state.obstacles.push({ x: VW + 10, y: GROUND_Y - 12 });
+      state.spawnTimer = 70 + Math.random() * 50 - state.speed * 6;
+    }
+    state.obstacles.forEach(o => o.x -= state.speed);
+    state.obstacles = state.obstacles.filter(o => o.x > -14);
+
+    state.gemTimer--;
+    if (state.gemTimer <= 0) {
+      state.gems.push({ x: VW + 10, y: GROUND_Y - 26 - Math.random() * 18, w: Math.random() * 10 });
+      state.gemTimer = 90 + Math.random() * 60;
+    }
+    state.gems.forEach(g => { g.x -= state.speed; g.w += 0.15; });
+    state.gems = state.gems.filter(g => g.x > -10);
+
+    state.clouds.forEach(c => {
+      c.x -= state.speed * 0.3;
+      if (c.x < -14) c.x = VW + Math.random() * 20;
+    });
+
+    const pBox = { x: p.x, y: p.y, w: 10, h: p.ducking ? 10 : 14 };
+    for (const o of state.obstacles) {
+      const oBox = { x: o.x, y: o.y, w: 12, h: 12 };
+      if (pBox.x < oBox.x + oBox.w && pBox.x + pBox.w > oBox.x &&
+          pBox.y < oBox.y + oBox.h && pBox.y + pBox.h > oBox.y) {
+        endGame();
+        return;
+      }
+    }
+    state.gems = state.gems.filter(g => {
+      const hit = pBox.x < g.x + 8 && pBox.x + pBox.w > g.x &&
+                  pBox.y < g.y + 8 && pBox.y + pBox.h > g.y;
+      if (hit) {
+        state.score += 10;
+        beep(880, 0.09, 'triangle');
+      }
+      return !hit;
+    });
+
+    state.frameTimer++;
+    if (state.frameTimer > 8) {
+      state.frame = state.frame === 0 ? 1 : 0;
+      state.frameTimer = 0;
+    }
+
+    state.score += 0.08;
+    scoreVal.textContent = Math.floor(state.score);
+  }
+
+  function endGame() {
+    state.gameOver = true;
+    state.running = false;
+    beep(160, 0.35, 'sawtooth');
+    overlayTitle.textContent = '게임 오버! 점수 ' + Math.floor(state.score);
+    overlay.classList.add('show');
+    startBtn.disabled = true;
+    stopBtn.disabled = true;
+  }
+
+  function render() {
+    const scale = canvas.height / VH;
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+
+    drawBackground();
+    state.gems.forEach(g => drawGem(g.x, g.y, g.w));
+    drawGround();
+    state.obstacles.forEach(o => drawThorble(o.x, o.y));
+    drawPip(state.player.x, state.player.y, state.frame, state.player.ducking);
+  }
+
+  function loop() {
+    if (state.running && !state.gameOver) {
+      update();
+      render();
+      requestAnimationFrame(loop);
+    }
+  }
+
+  startBtn.addEventListener('click', () => {
+    if (state.gameOver) return;
+    state.running = true;
+    overlay.classList.remove('show');
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+    requestAnimationFrame(loop);
+  });
+
+  stopBtn.addEventListener('click', () => {
+    state.running = false;
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    overlayTitle.textContent = '일시정지됨';
+    overlay.classList.add('show');
+  });
+
+  restartBtn.addEventListener('click', reset);
+
+  soundBtn.addEventListener('click', () => {
+    soundOn = !soundOn;
+    soundBtn.textContent = soundOn ? '🔊' : '🔇';
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' || e.code === 'ArrowUp') {
+      e.preventDefault();
+      jump();
+    }
+    if (e.code === 'ArrowDown') {
+      state.player.ducking = true;
+    }
+  });
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'ArrowDown') state.player.ducking = false;
+  });
+  canvas.addEventListener('mousedown', jump);
+
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      resizeCanvas();
+      render();
+    }, 100);
+  });
+
+  reset();
+})();
+</script>
+
+</body>
+</html>
